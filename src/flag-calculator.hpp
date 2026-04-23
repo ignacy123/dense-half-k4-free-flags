@@ -1,0 +1,478 @@
+#pragma once
+#include "cache.hpp"
+#include "flag-generator.hpp"
+#include "flag.hpp"
+#include "utils.hpp"
+#include <cassert>
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <ostream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+template <int theta, int vertices> class FlagVector {
+public:
+  FlagVector<theta, vertices>(const flag &blueprint, double coefficient)
+      : type([&]() {
+          flag type;
+          blueprint.get_type_subflag(type);
+          return type;
+        }()) {
+    assert(type.m_Theta == theta);
+    coefficients.assign(get_flags().size(), coefficient);
+    if (blueprint.m_Theta == blueprint.m_vertices) {
+      return;
+    }
+    if (blueprint.m_vertices != vertices) {
+      cerr << "Instantiated vector with a flag that isn't a plain type or a "
+              "compatible flag"
+           << endl;
+      exit(1);
+    }
+  };
+
+  FlagVector<theta, vertices>(const flag &blueprint = flag())
+      : FlagVector<theta, vertices>(blueprint, 0.) {
+    if (blueprint.m_Theta == blueprint.m_vertices) {
+      return;
+    }
+    (*this) += blueprint;
+  };
+
+  static FlagVector<theta, vertices> from_vector(flag type,
+                                                 vector<flag_coeff> flags) {
+    FlagVector<theta, vertices> result(type);
+    for (int i = 0; i < flags.size(); i++) {
+      assert(flags[i].g.m_vertices == vertices);
+      assert(flags[i].g.have_same_type(type));
+      result += flags[i];
+    }
+    return result;
+  }
+
+  static FlagVector<theta, vertices> load_from_file(string filename,
+                                                    flag type) {
+    FlagVector<theta, vertices> result(type);
+    ifstream infile;
+    infile.open(filename.c_str(), ifstream::in);
+    if (!infile.good()) {
+      cerr << "Failed opening file " << filename;
+      exit(1);
+    }
+
+    FilteringIstream filteredinfile(infile);
+    double coefficient;
+    flag flag;
+    while (true) {
+      filteredinfile >> coefficient;
+      if (filteredinfile.fail())
+        break;
+      flag.load_from_stream(filteredinfile, vertices, theta);
+      flag_coeff fc;
+      fc.g = flag;
+      fc.coefficient = coefficient;
+      cerr << fc << endl;
+      FlagVector<theta, vertices> added(flag);
+      added = added * coefficient;
+      result += added;
+    }
+
+    return result;
+  }
+
+  void ensure_coefficients_are_integers() {
+    double error = 0.0000000001;
+    for (double coefficient : coefficients) {
+      int rounded = round(coefficient);
+      if (abs(rounded - coefficient) > error) {
+        cerr << "Non-integer coefficient found: " << fixed << setprecision(16)
+             << coefficient << ", exiting..." << endl;
+        exit(1);
+      }
+    }
+  }
+
+  const vector<flag> &get_flags() const {
+    return get_labeled_flags_of_one_type(vertices, type);
+  }
+  const vector<double> &get_coefficients() const { return coefficients; }
+  void set_coefficient(int i, float value) { coefficients[i] = value; }
+  const flag &get_type() { return type; }
+
+  bool operator==(const FlagVector<theta, vertices> &other) {
+    if (!type.is_identical_to(other.type)) {
+      return false;
+    }
+    if (coefficients != other.coefficients) {
+      return false;
+    }
+    return true;
+  }
+
+  void print(std::ostream &stream, bool skip_if_empty = true,
+             bool round = false) const {
+    for (int i = 0; i < get_flags().size(); i++) {
+      flag_coeff fc;
+      fc.coefficient = coefficients[i];
+      fc.g = get_flags()[i];
+      if (fc.print(stream, skip_if_empty, round)) {
+        stream << endl;
+      }
+    }
+  }
+
+  void debug_print(std::ostream &stream, bool round = false) {
+    stream << get_flags().size() << endl;
+    print(stream, false, round);
+  }
+
+  friend ostream &operator<<(std::ostream &stream,
+                             const FlagVector<theta, vertices> &flag_vector) {
+    flag_vector.print(stream);
+    return stream;
+  };
+
+  void operator+=(double constant) {
+    for (int i = 0; i < get_flags().size(); i++) {
+      coefficients[i] += constant;
+    }
+  }
+
+  void operator-=(double constant) {
+    for (int i = 0; i < get_flags().size(); i++) {
+      coefficients[i] -= constant;
+    }
+  }
+
+  void operator*=(double constant) {
+    for (int i = 0; i < get_flags().size(); i++) {
+      coefficients[i] *= constant;
+    }
+  }
+
+  void operator+=(const flag &flag) { add_flag_with_coefficient(flag); };
+
+  void operator-=(const flag &flag) { add_flag_with_coefficient(flag, -1.); };
+
+  void operator+=(const flag_coeff &fc) {
+    add_flag_with_coefficient(fc.g, fc.coefficient);
+  };
+
+  friend FlagVector<theta, vertices> &
+  operator+=(FlagVector<theta, vertices> &flag_vector,
+             const FlagVector<theta, vertices> &other) {
+    assert(flag_vector.type.have_same_type(other.type));
+    for (int i = 0; i < flag_vector.get_flags().size(); i++) {
+      flag_vector.coefficients[i] += other.coefficients[i];
+    }
+    return flag_vector;
+  };
+
+  void operator-=(const flag_coeff &fc) {
+    add_flag_with_coefficient(fc.g, -fc.coefficient);
+  };
+
+  friend FlagVector<theta, vertices> &
+  operator-=(FlagVector<theta, vertices> &flag_vector,
+             const FlagVector<theta, vertices> &other) {
+    flag_vector += (other * (-1));
+    return flag_vector;
+  };
+
+  template <int new_theta, int vertices_left, int vertices_right>
+  friend FlagVector<new_theta, vertices_left + vertices_right - new_theta>
+  operator*(const FlagVector<new_theta, vertices_left> left,
+            const FlagVector<new_theta, vertices_right> right);
+
+  template <int new_theta, int new_vertices>
+  friend FlagVector<new_theta, new_vertices>
+  operator*(const FlagVector<new_theta, new_vertices> flag_vector,
+            double coefficient);
+
+  friend FlagVector<theta, vertices>
+  operator+(double constant, const FlagVector<theta, vertices> &flag_vector) {
+    FlagVector<theta, vertices> result(flag_vector.type);
+    for (int i = 0; i < flag_vector.coefficients.size(); i++) {
+      result.coefficients[i] = constant + flag_vector.coefficients[i];
+    }
+    return result;
+  }
+
+  friend FlagVector<theta, vertices>
+  operator+(const FlagVector<theta, vertices> &flag_vector, double constant) {
+    return constant + flag_vector;
+  }
+
+  friend FlagVector<theta, vertices>
+  operator-(double constant, const FlagVector<theta, vertices> &flag_vector) {
+    return constant + (-flag_vector);
+  };
+
+  friend FlagVector<theta, vertices>
+  operator-(const FlagVector<theta, vertices> &flag_vector, double constant) {
+    return flag_vector + (-constant);
+  };
+
+  FlagVector<theta, vertices>
+  operator+(const FlagVector<theta, vertices> &other) {
+    FlagVector<theta, vertices> result(type);
+    for (int i = 0; i < get_flags().size(); i++) {
+      result.coefficients[i] = coefficients[i] + other.coefficients[i];
+    }
+    return result;
+  };
+
+  FlagVector<theta, vertices> operator-() const {
+    FlagVector<theta, vertices> result(type);
+    for (int i = 0; i < get_flags().size(); i++) {
+      result.coefficients[i] = -coefficients[i];
+    }
+    return result;
+  }
+
+  FlagVector<theta, vertices>
+  operator-(const FlagVector<theta, vertices> &other) {
+    return (*this) + (other * double(-1.));
+  };
+
+  template <int remaining_labeled, int new_vertices>
+  FlagVector<remaining_labeled, new_vertices> project() {
+    assert(remaining_labeled <= theta);
+    assert(new_vertices >= vertices);
+    flag type_copy = type;
+    type_copy.set_Theta(remaining_labeled);
+    flag reduced_type;
+    type_copy.get_type_subflag(reduced_type);
+    FlagVector<remaining_labeled, new_vertices> result(reduced_type);
+    const vector<ProjectionPartialResult> &projection_cache =
+        get_projection_cache(type, vertices, new_vertices, remaining_labeled);
+    for (auto partial_result : projection_cache) {
+      double coeff =
+          (double)partial_result.good_maps / (double)partial_result.all_maps;
+      result.coefficients[partial_result.idx_projected] +=
+          coeff * coefficients[partial_result.idx_original];
+    }
+    return result;
+  }
+
+  double density(int m_vertices, int idx, int remaining_labeled = 0) {
+    double density = 0;
+    vector<ProjectionPartialResult> projection_cache =
+        get_projection_cache(type, m_vertices, vertices, remaining_labeled);
+    for (auto partial_result : projection_cache) {
+      if (partial_result.idx_original != idx)
+        continue;
+      density +=
+          ((double)partial_result.good_maps / (double)partial_result.all_maps) *
+          coefficients[partial_result.idx_projected];
+    }
+    return density;
+  }
+
+  double count_value(const vector<double> &densities) {
+    if (theta != 0) {
+      throw invalid_argument("cannot count value for rooted vector");
+    }
+    if (densities.size() != coefficients.size()) {
+      throw invalid_argument("Incompatible vectors");
+    }
+
+    double value = 0;
+    for (int i = 0; i < densities.size(); i++) {
+      value += coefficients[i] * densities[i];
+    }
+
+    return value;
+  }
+
+  FlagVector<theta, theta + (vertices - theta) * 2>
+  square_with_matrix(const vector<vector<double>> &matrix) {
+    assert(matrix.size() == coefficients.size());
+    // We better hope that matrix is positive semidefinite...
+    for (vector<double> row : matrix) {
+      assert(row.size() == coefficients.size());
+    }
+    FlagVector<theta, theta + (vertices - theta) * 2> result(type);
+
+    const vector<MultiplicationPartialResult> &multiplication_cache =
+        get_multiplication_cache(type, vertices, vertices);
+    for (auto partial_result : multiplication_cache) {
+      double coeff =
+          (double)partial_result.good_maps / (double)partial_result.all_maps;
+      result.coefficients[partial_result.idx_multiplied] +=
+          coeff * coefficients[partial_result.idx_left] *
+          coefficients[partial_result.idx_right] *
+          matrix[partial_result.idx_left][partial_result.idx_right];
+    }
+
+    return result;
+  }
+
+  FlagVector<theta, theta + (vertices - theta) * 2>
+  square_with_vector(vector<double> vec) {
+    assert(vec.size() == coefficients.size());
+    vector<vector<double>> matrix(coefficients.size(),
+                                  vector<double>(coefficients.size(), 0.));
+    for (int i = 0; i < coefficients.size(); i++) {
+      for (int j = 0; j < coefficients.size(); j++) {
+        matrix[i][j] = vec[i] * vec[j];
+      }
+    }
+    return square_with_matrix(matrix);
+  }
+
+private:
+  void add_flag_with_coefficient(const flag &flag, double coefficient = 1) {
+    assert(type.have_same_type(flag));
+    bool found_at_least_one = false;
+    for (int i = 0; i < get_flags().size(); i++) {
+      if (get_flags()[i].is_isomorphic_to(flag)) {
+        coefficients[i] += coefficient;
+        found_at_least_one = true;
+      }
+    }
+    if (!found_at_least_one) {
+      cerr << "Error: No isomorphic flag found" << endl;
+      exit(1);
+    }
+  };
+
+  vector<double> coefficients;
+  flag type;
+  template <int, int> friend class FlagVector;
+};
+
+template <int new_theta, int vertices_left, int vertices_right>
+FlagVector<new_theta, vertices_left + vertices_right - new_theta>
+operator*(const FlagVector<new_theta, vertices_left> left,
+          const FlagVector<new_theta, vertices_right> right) {
+  if (!left.type.is_identical_to(right.type)) {
+    cerr << "Error: tried multiplying vectors of different type" << endl;
+    exit(1);
+  }
+  string type = left.type.print("");
+  int new_vertices = vertices_left + vertices_right - new_theta;
+  FlagVector<new_theta, vertices_left + vertices_right - new_theta> result(
+      left.type);
+  const vector<MultiplicationPartialResult> &multiplication_cache =
+      get_multiplication_cache(left.type, vertices_left, vertices_right);
+  for (auto partial_result : multiplication_cache) {
+    double coeff =
+        (double)partial_result.good_maps / (double)partial_result.all_maps;
+    result.coefficients[partial_result.idx_multiplied] +=
+        coeff * left.coefficients[partial_result.idx_left] *
+        right.coefficients[partial_result.idx_right];
+  }
+
+  return result;
+};
+
+template <int new_theta, int new_vertices>
+FlagVector<new_theta, new_vertices>
+operator*(const FlagVector<new_theta, new_vertices> flag_vector,
+          double coefficient) {
+  FlagVector<new_theta, new_vertices> result(flag_vector.type);
+  for (int i = 0; i < flag_vector.get_flags().size(); i++) {
+    result.coefficients[i] = flag_vector.coefficients[i] * coefficient;
+  }
+  return result;
+};
+
+inline pair<bool, flag_coeff> get_edge_between(const flag_coeff &flag_left,
+                                               const flag_coeff &flag_right,
+                                               int edge_color) {
+  assert(flag_left.g.have_same_type(flag_right.g));
+  assert(flag_left.g.m_vertices == flag_left.g.m_Theta + 1);
+  assert(flag_left.g.m_vertices == flag_right.g.m_vertices);
+
+  flag raw_flag;
+  raw_flag.set_vertices_and_Theta(flag_left.g.m_Theta + 2, flag_left.g.m_Theta);
+  // Copy type.
+  for (int i = 0; i < flag_left.g.m_Theta; i++) {
+    for (int j = i + 1; j < flag_left.g.m_Theta; j++) {
+      raw_flag.color_edge(i, j, flag_left.g.m_color_edge[i][j]);
+    }
+  }
+
+#ifdef G_COLORED_VERTICES
+  for (int i = 0; i < flag_left.g.m_Theta; i++) {
+    raw_flag.color_vertex(i, flag_left.g.m_color_vertex[i]);
+  }
+  raw_flag.color_vertex(flag_left.g.m_Theta,
+                        flag_left.g.m_color_vertex[flag_left.g.m_Theta]);
+  raw_flag.color_vertex(flag_right.g.m_Theta + 1,
+                        flag_right.g.m_color_vertex[flag_right.g.m_Theta]);
+#endif
+
+  for (int i = 0; i < flag_left.g.m_Theta; i++) {
+    raw_flag.color_edge(i, flag_left.g.m_Theta,
+                        flag_left.g.m_color_edge[i][flag_left.g.m_Theta]);
+  }
+  for (int i = 0; i < flag_right.g.m_Theta; i++) {
+    raw_flag.color_edge(i, flag_right.g.m_Theta + 1,
+                        flag_right.g.m_color_edge[i][flag_right.g.m_Theta]);
+  }
+  raw_flag.color_edge(flag_left.g.m_Theta, flag_left.g.m_Theta + 1, edge_color);
+  flag_coeff result;
+  result.g = raw_flag;
+  result.coefficient = flag_left.coefficient * flag_right.coefficient;
+  return pair<bool, flag_coeff>(!is_flag_forbidden(raw_flag), result);
+}
+
+inline vector<flag_coeff> get_edges_between(const flag_coeff &flag_left,
+                                            const flag_coeff &flag_right) {
+  vector<flag_coeff> result;
+  for (int color : get_allowed_edge_colors()) {
+    if (color == 1) {
+      continue;
+    }
+    auto edge_attempt = get_edge_between(flag_left, flag_right, color);
+    if (edge_attempt.first) {
+      result.push_back(edge_attempt.second);
+    }
+  }
+  return result;
+}
+
+template <int root_size>
+FlagVector<root_size, root_size + 2>
+get_edges_inside(flag type, vector<flag_coeff> flags) {
+  FlagVector<root_size, root_size + 2> result(type);
+  for (int i = 0; i < flags.size(); i++) {
+    for (int j = i; j < flags.size(); j++) {
+      auto edges_between = get_edges_between(flags[i], flags[j]);
+      for (auto edge_between : edges_between) {
+        result += edge_between;
+      }
+    }
+  }
+  // When considering oriented edges, it is very easy to stumble upon multiple
+  // versions of the same edge inside. It is also non-trivial to detect such
+  // cases beforehand, hence we fix afterwards.
+  for (int i = 0; i < result.get_coefficients().size(); i++) {
+    if (result.get_coefficients()[i] > 1) {
+      result.set_coefficient(i, 1.);
+    }
+  }
+  return result;
+}
+
+template <int root_size>
+FlagVector<root_size, root_size + 2>
+get_edges_between(flag type, const vector<flag_coeff> &left,
+                  const vector<flag_coeff> &right) {
+  FlagVector<root_size, root_size + 2> result(type);
+  for (auto flag_left : left) {
+    for (auto flag_right : right) {
+      auto edges_between = get_edges_between(flag_left, flag_right);
+      for (auto edge_between : edges_between) {
+        result += edge_between;
+      }
+    }
+  }
+  return result;
+}
