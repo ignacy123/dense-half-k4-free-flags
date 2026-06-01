@@ -332,7 +332,7 @@ bool dump_unlabeled_flags(int sizeKn) {
 
   cerr << "Writing unlabeled flags to file " << filename.str() << endl;
 
-  for (int f = 0; f <= V + 1; f++) {
+  for (int f = 0; f <= V; f++) {
     for (unsigned int x = 0; x < g_unlabeled_flags[f].size(); x++) {
       outfile << g_unlabeled_flags[f][x].print() << endl;
     }
